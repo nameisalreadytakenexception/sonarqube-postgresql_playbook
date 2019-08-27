@@ -1,0 +1,175 @@
+--- 
+ - hosts: DATABASE_SERVER
+   become: yes
+   vars:
+     ansible_python_interpreter: /usr/bin/python
+     sq_db_pass: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          30626237393439316463343432333238323239616664623132356130393562343535613539316638
+          6466333431313130363765336135653339376631663635380a613561343962393663613135396237
+          38396566383638636461336138373464633937623165666135393434636663643239643234636632
+          3034653131303132370a663635306165396163626236396564353937396662356331336166633539
+          65643139393161653265663035303636313266343063323564393464363666383434
+   
+   tasks:
+
+   - name: psql repo
+     command: rpm -Uvh https://download.postgresql.org/pub/repos/yum/9.6/redhat/rhel-7-x86_64/pgdg-centos96-9.6-3.noarch.rpm
+     ignore_errors: yes
+
+   - name: yum install
+     yum: name='{{ item }}'
+     loop:
+       - postgresql96-server
+       - postgresql96-contrib
+       - python-psycopg2
+
+   - name: initdb
+     command: /usr/pgsql-9.6/bin/postgresql96-setup initdb
+     ignore_errors: yes
+   
+   - name: enable MD5(1/2)
+     lineinfile:
+       dest: /var/lib/pgsql/9.6/data/pg_hba.conf
+       regexp: '^host    all             all             127.0.0.1/32            ident'
+       line: 'host    all             all             {{sq_ip}}/32           md5'
+   - name: enable MD5(2/2)
+     lineinfile:
+       dest: /var/lib/pgsql/9.6/data/pg_hba.conf
+       regexp: '^host    all             all             ::1/128                 ident'
+       line: 'host    all             all             ::1/128                 md5'
+
+   - name: listen all addr
+     lineinfile:
+       dest: /var/lib/pgsql/9.6/data/postgresql.conf
+       regexp: "^#listen_addresses = 'localhost'"
+       line:  "listen_addresses = '*'"
+
+   - name: start psql service
+     service:
+       name: postgresql-9.6
+       state: started
+       enabled: yes
+
+   - name: copy sq dbsetup.sh
+     copy:
+       src: /root/ansible/dbsetup.sh
+       dest: /tmp/dbsetup.sh
+       mode: 0744
+       owner: postgres
+    
+   - name: create dir remote_tmp
+     file:
+       path: /var/lib/pgsql/.ansible/tmp
+       state: directory
+       mode: 0777
+
+   - name: setup db for sq
+     become_user: postgres
+     command: /tmp/dbsetup.sh {{ sq_db_pass }}
+
+   - name: access priv
+     become_user: postgres
+     postgresql_user:
+       db: sonar
+       user: sonar 
+       priv: ALL
+
+   - name: firewall(1/3)
+     command: firewall-cmd --zone=public --add-port=3306/tcp --permanent
+   - name: firewall(2/3)
+     command: firewall-cmd --zone=public --add-port=5432/tcp --permanent
+   - name: firewall(3/3)
+     command: firewall-cmd --reload
+
+   - name: restart psql service
+     service:
+       name: postgresql-9.6
+       state: restarted
+
+ - hosts: SONARQUBE_SERVER
+   become: yes
+   vars:
+     sq_db_pass: !vault |
+          $ANSIBLE_VAULT;1.1;AES256
+          30626237393439316463343432333238323239616664623132356130393562343535613539316638
+          6466333431313130363765336135653339376631663635380a613561343962393663613135396237
+          38396566383638636461336138373464633937623165666135393434636663643239643234636632
+          3034653131303132370a663635306165396163626236396564353937396662356331336166633539
+          65643139393161653265663035303636313266343063323564393464363666383434
+   
+   tasks:
+
+   - name: yum installation
+     yum: name='{{ item }}'
+     loop:
+       - java-1.8.0-openjdk-devel.x86_64
+       - unzip
+   
+   - name: java setup(1/4)
+     command: cp /etc/profile /etc/profile_orig
+   - name: java setup(2/4)
+     command: echo -e "export JAVA_HOME=/usr/lib/jvm/jre-1.8.0-openjdk" >> /etc/profile
+   - name: java setup(3/4)
+     command: echo -e "export JRE_HOME=/usr/lib/jvm/jre" >> /etc/profile
+   - name: java setup(4/4)
+     command: echo -e "$JAVA_HOME\n$JRE_HOME"
+
+   - name: SonarQube installation
+     get_url:
+       url: https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-6.4.zip
+       dest: /home/etalon
+   - name: unzip sonar
+     command: unzip sonarqube-6.4.zip -d /opt
+   - name: mv sonar
+     command: mv /opt/sonarqube-6.4 /opt/sonarqube
+     ignore_errors: yes
+
+   - name: add user sonar(1/3)
+     user:
+       name: sonar
+   - name: add user sonar(2/3)
+     command: chown -R sonar:sonar /opt/sonarqube
+   - name: add user sonar(3/3)
+     lineinfile:
+       dest: /opt/sonarqube/bin/linux-x86-64/sonar.sh
+       regexp: '^#RUN_AS_USER='
+       line: 'RUN_AS_USER=sonar'
+
+   - name: attaching sq with psql(1/3)
+     lineinfile:
+       dest: /opt/sonarqube/conf/sonar.properties
+       regexp: '^#sonar.jdbc.username='
+       insertafter: "^#sonar.jdbc.username="
+       line: 'sonar.jdbc.username=sonar'
+   - name: attaching sq with psql(2/3)
+     lineinfile:
+       dest: /opt/sonarqube/conf/sonar.properties
+       regexp: '^#sonar.jdbc.password='
+       insertafter: "^#sonar.jdbc.password="
+       line: 'sonar.jdbc.password={{sq_db_pass}}'
+   - name: attaching sq with psql(3/3)
+     lineinfile:
+       dest: /opt/sonarqube/conf/sonar.properties
+       regexp: '^#sonar.jdbc.url=jdbc:postgresql://localhost/sonar'
+       insertafter: "^#sonar.jdbc.url=jdbc:postgresql://localhost/sonar"
+       line: 'sonar.jdbc.url=jdbc:postgresql://{{db_ip}}/sonar'
+       
+   - name: firewall(1/3)
+     command: firewall-cmd --zone=public --add-port=9000/tcp --permanent
+   - name: firewall(2/3)
+     command: firewall-cmd --zone=public --add-port=3306/tcp --permanent
+   - name: firewall(3/3)
+     command: firewall-cmd --reload  
+
+   - name: copy conf file to setup sq as systemd service
+     copy:
+       src: /root/ansible/sonar.service
+       dest: /etc/systemd/system
+
+   - name: start sonar service
+     service:
+       name: sonar
+       enabled: yes
+       state: started
+       daemon_reload: yes

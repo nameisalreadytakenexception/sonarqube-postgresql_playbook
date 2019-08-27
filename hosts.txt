@@ -1,0 +1,9 @@
+[SONARQUBE_SERVER]
+sonarqube ansible_host=10.26.34.157
+ 
+[DATABASE_SERVER]
+database ansible_host=10.26.34.239
+ 
+[all:vars]
+sq_ip=10.26.34.157
+db_ip=10.26.34.239

@@ -1,0 +1,4 @@
+---
+ansible_user            : etalon
+ansible_ssh_private_key : /root/.ssh/id_rsa.pub
+ansible_sudo_pass       : pornhub
